@@ -104,86 +104,91 @@ foreach (var project in projects)
             continue;
         }
 
-        //Console.WriteLine($"     Repository: {repo.Name} ({branchRef})");
+        Console.WriteLine($"     Repository: {repo.Name} ({branchRef})");
 
-        //Console.WriteLine($"Checking repo: {repo.Name}");
+        Console.WriteLine($"Checking repo: {repo.Name}");
 
-        var res = client.GetAppSettingSandBox(repo, project.Name).Result;
+
+        /* var res = client.GetAppSettingSandBox(repo, project.Name).Result;
         if (res != null)
         {
             foreach (var match in res)
             {
                 Console.WriteLine($"{repo.Name}: {match.Path}");
             }
-        }
+        } */
            
 
 
 
-        //var prs = await client.GetMergedPullRequestsAsync(project.Name, repo.Id, branchRef);
-        //if (prs == null || !prs.Any())
-        //{
-        //    Console.WriteLine("      No PRs found.");
-        //    continue;
-        //}
+        var prs = await client.GetMergedPullRequestsAsync(project.Name, repo.Id, branchRef);
+        if (prs == null || !prs.Any())
+        {
+           Console.WriteLine("      No PRs found.");
+           continue;
+        }
 
-        //var prStatsList = new List<PRStats>();
-        //var prStatsListDetails = new List<DetailedPRStats>();
-        //var commitStatsList = new List<DetailedCommitStats>();
+        var prStatsList = new List<PRStats>();
+        var prStatsListDetails = new List<DetailedPRStats>();
+        var commitStatsList = new List<DetailedCommitStats>();
 
-        //foreach (var pr in prs)
-        //{
-        //    var merged = DateTime.Parse(pr["closedDate"]!.ToString());
-
-
-        //    if (fromDate.HasValue && merged < fromDate.Value) continue;
-        //    if (toDate.HasValue && merged > toDate.Value) continue;
-
-        //    var prId = pr["pullRequestId"]!.Value<int>();
-
-        //    var created = DateTime.Parse(pr["creationDate"]!.ToString());
-        //    var creator = pr["createdBy"]?["displayName"]?.ToString() ?? "Unknown";
-
-        //    //don't delete
-
-        //    prStatsListDetails.Add(new DetailedPRStats
-        //    {
-        //        Id = prId,
-        //        Title = pr["title"]!.ToString(),
-        //        Project = project.Name,
-        //        Repository = repo.Name,
-        //        Branch = branchRef.Split('/').Last(),
-        //        Created = created,
-        //        Merged = merged,
-        //        LeadTimeHours = (merged - created).TotalHours,
-        //        LinesChanged = await client.GetLinesChangedInPR(project.Name, repo.Name, prId),
-        //        IsRevert = pr["title"]!.ToString().Contains("Revert", StringComparison.OrdinalIgnoreCase),
-        //        IsHotfix = !pr["sourceRefName"]!.ToString().Contains("develop", StringComparison.OrdinalIgnoreCase)
-        //       && (branchRef.EndsWith("main") || branchRef.EndsWith("master")),
-        //        Developer = creator
-        //    });
-        //    /////till here
-        //    ///
-        //    //prStatsList.Add(new PRStats
-        //    //{
-        //    //    Title = pr["title"]!.ToString(),
-        //    //    SourceRef = pr["sourceRefName"].ToString(),
-        //    //    TargetRef = pr["targetRefName"].ToString(),
-        //    //    Created = created,
-        //    //    Merged = merged,
-        //    //    LinesChanged = await client.GetLinesChangedInPR(project.Name, repo.Name, prId),
-        //    //});
-
-        //    #region author report
-        //    commitStatsList = await client.GetLinesChangedInPRPerDeveloper(project.Name, repo.Name, prId);
-        //    foreach (var commitStats in commitStatsList)
-        //    {
-        //        csvPrs.AppendLine($"{prId},{project.Name},{repo.Name},{commitStats.CommitId},{commitStats.Author},{commitStats.CommitDate:yyyy-MM-dd},{commitStats.LinesAdded},{commitStats.LinesEdited},{commitStats.LinesDeleted},{commitStats.TotalLinesChanged}");
-        //    }
-        //    #endregion
+        foreach (var pr in prs)
+        {
+           var merged = DateTime.Parse(pr["closedDate"]!.ToString());
 
 
-        //}
+           if (fromDate.HasValue && merged < fromDate.Value) continue;
+           if (toDate.HasValue && merged > toDate.Value) continue;
+
+           var prId = pr["pullRequestId"]!.Value<int>();
+
+           var created = DateTime.Parse(pr["creationDate"]!.ToString());
+           var creator = pr["createdBy"]?["displayName"]?.ToString() ?? "Unknown";
+
+            //don't delete
+
+        //pr report
+                 prStatsListDetails.Add(new DetailedPRStats
+                {
+                    Id = prId,
+                    Title = pr["title"]!.ToString(),
+                    Project = project.Name,
+                    Repository = repo.Name,
+                    Branch = branchRef.Split('/').Last(),
+                    Created = created,
+                    Merged = merged,
+                    LeadTimeHours = (merged - created).TotalHours,
+                    LinesChanged = await client.GetLinesChangedInPR(project.Name, repo.Name, prId),
+                    IsRevert = pr["title"]!.ToString().Contains("Revert", StringComparison.OrdinalIgnoreCase),
+                    IsHotfix = !pr["sourceRefName"]!.ToString().Contains("develop", StringComparison.OrdinalIgnoreCase)
+                   && (branchRef.EndsWith("main") || branchRef.EndsWith("master")),
+                    Developer = creator
+                });
+
+
+                    /////till here
+                   
+                    ///
+                    // prStatsList.Add(new PRStats
+                    // {
+                    //    Title = pr["title"]!.ToString(),
+                    //    SourceRef = pr["sourceRefName"].ToString(),
+                    //    TargetRef = pr["targetRefName"].ToString(),
+                    //    Created = created,
+                    //    Merged = merged,
+                    //    LinesChanged = await client.GetLinesChangedInPR(project.Name, repo.Name, prId),
+                    // });
+
+                    #region prs author report
+                //     commitStatsList = await client.GetLinesChangedInPRPerDeveloper(project.Name, repo.Name, prId);
+                //    foreach (var commitStats in commitStatsList)
+                //    {
+                //        csvPrs.AppendLine($"{prId},{project.Name},{repo.Name},{commitStats.CommitId},{commitStats.Author},{commitStats.CommitDate:yyyy-MM-dd},{commitStats.LinesAdded},{commitStats.LinesEdited},{commitStats.LinesDeleted},{commitStats.TotalLinesChanged}");
+                //    }
+                   #endregion
+
+
+        }
 
 
 
@@ -192,14 +197,14 @@ foreach (var project in projects)
 
         ////export PRs
 
-        //var grouped = prStatsList
+        // var grouped = prStatsList
         //    .GroupBy(pr => new { pr.Merged.Year, pr.Merged.Month })
         //    .OrderByDescending(g => g.Key.Year)
         //    .ThenByDescending(g => g.Key.Month);
-
-
-        //foreach (var group in grouped)
-        //{
+        //
+        //
+        // foreach (var group in grouped)
+        // {
         //    var stats = new MonthlyDeploymentStats
         //    {
         //        Project = project.Name,
@@ -209,9 +214,9 @@ foreach (var project in projects)
         //        Month = group.Key.Month,
         //        PullRequests = group.ToList()
         //    };
-
+        //
         //    AnalyzePRGroup(csv, stats);
-        //}
+        // }
     }
 
     
@@ -226,9 +231,9 @@ var prFileName = $"pullrequest_report_{DateTime.Now:yyyyMMdd_HHmmss}.csv";
 System.IO.File.WriteAllText(prFileName, csvPrs.ToString());
 Console.WriteLine($"\nCSV PR export complete: {prFileName}");
 
-//var fileName = $"deployment_report_{DateTime.Now:yyyyMMdd_HHmmss}.csv";
-//File.WriteAllText(fileName, csv.ToString());
-//Console.WriteLine($"\nCSV export complete: {fileName}");
+// var fileName = $"deployment_report_{DateTime.Now:yyyyMMdd_HHmmss}.csv";
+// System.IO.File.WriteAllText(fileName, csv.ToString());
+// Console.WriteLine($"\nCSV export complete: {fileName}");
 
 void AnalyzePRGroup(StringBuilder csv, MonthlyDeploymentStats stats)
 {
