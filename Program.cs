@@ -2,11 +2,16 @@
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
-using static System.Net.WebRequestMethods;
+using DevTracker.Models;
+using LibGit2Sharp;
+using DiffPlex;
+using DiffPlex.DiffBuilder;
+
+using DiffPlex.DiffBuilder.Model;
 
 var config = JObject.Parse(System.IO.File.ReadAllText("appsettings.json"));
 string org = config["Organization"]!.ToString();
-string pat = config["PAT"]!.ToString(); // don't forget to regenerate this time by time. it will expire after three months or so (end of october0
+string pat = config["PAT"]!.ToString(); // don't forget to regenerate this time by time. it will expire after three months or so (end of october
 
 var client = new AzureDevOpsClient(org, pat);
 
@@ -73,6 +78,20 @@ csv.AppendLine("Project,Repository,Branch,Year,Month,Deploys,Reverts,Hotfixes,Fa
 var csvPrs = new StringBuilder();
 csvPrs.AppendLine("PR ID,Project,Repository,Commit ID,Author,Date,Added,Edited,Deleted,Total LOC");
 
+
+var authorStats = new Dictionary<string, AuthorStats>(StringComparer.OrdinalIgnoreCase);
+
+var csvCommits = new StringBuilder();
+csvCommits.AppendLine("PR ID,Project,Repository,Commit ID,Author Name,Author Email,Date,Added,Deleted,Total LOC, Logical Changes");
+
+var csvAuthors = new StringBuilder();
+csvAuthors.AppendLine("Author Name,Author Email,Commits,PRs Touched,Lines Added,Lines Deleted,Logical Changes,Files Changed,Total LOC");
+
+
+var authorToPrs = new Dictionary<string, HashSet<int>>(StringComparer.OrdinalIgnoreCase);
+
+
+
 foreach (var project in projects)
 {
     if (excludedProjects.Contains(project.Name))
@@ -91,7 +110,6 @@ foreach (var project in projects)
             continue;
         }
 
-
         var branches = await client.GetBranchesAsync(project.Name, repo.Id);
 
         string? branchRef = branches.Contains("refs/heads/main") ? "refs/heads/main" :
@@ -105,23 +123,11 @@ foreach (var project in projects)
         }
 
         Console.WriteLine($"     Repository: {repo.Name} ({branchRef})");
-
         Console.WriteLine($"Checking repo: {repo.Name}");
 
-
-        /* var res = client.GetAppSettingSandBox(repo, project.Name).Result;
-        if (res != null)
-        {
-            foreach (var match in res)
-            {
-                Console.WriteLine($"{repo.Name}: {match.Path}");
-            }
-        } */
-           
-
-
-
-        var prs = await client.GetMergedPullRequestsAsync(project.Name, repo.Id, branchRef);
+        var localRepoPath = GitHelpers.EnsureLocalRepo(org, project.Name, Guid.Parse(repo.Id), pat);
+ 
+        var prs = await client.GetMergedPullRequestsAsync(project.Name, repo.Id, branchRef); //get only for specifc month not all
         if (prs == null || !prs.Any())
         {
            Console.WriteLine("      No PRs found.");
@@ -145,91 +151,74 @@ foreach (var project in projects)
            var created = DateTime.Parse(pr["creationDate"]!.ToString());
            var creator = pr["createdBy"]?["displayName"]?.ToString() ?? "Unknown";
 
-            //don't delete
+           // ---- Inside your foreach (var pr in prs) after you compute prId, created, merged, etc. ----
+           var prCommits = await client.GetPullRequestCommitsAsync(project.Name, repo.Id, prId);
+           if (prCommits == null || prCommits.Count == 0) continue;
+        
+           // For lead time per author within this PR:
+           var firstCommitTimeByAuthor = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
 
-        //pr report
-                 prStatsListDetails.Add(new DetailedPRStats
-                {
-                    Id = prId,
-                    Title = pr["title"]!.ToString(),
-                    Project = project.Name,
-                    Repository = repo.Name,
-                    Branch = branchRef.Split('/').Last(),
-                    Created = created,
-                    Merged = merged,
-                    LeadTimeHours = (merged - created).TotalHours,
-                    LinesChanged = await client.GetLinesChangedInPR(project.Name, repo.Name, prId),
-                    IsRevert = pr["title"]!.ToString().Contains("Revert", StringComparison.OrdinalIgnoreCase),
-                    IsHotfix = !pr["sourceRefName"]!.ToString().Contains("develop", StringComparison.OrdinalIgnoreCase)
-                   && (branchRef.EndsWith("main") || branchRef.EndsWith("master")),
-                    Developer = creator
-                });
+           foreach (var c in prCommits)
+           {
+               string authorName = c["author"]?["name"]?.ToString() ?? c["authorName"]?.ToString() ?? "Unknown";
+               string authorEmail = c["author"]?["email"]?.ToString() ?? c["authorEmail"]?.ToString() ?? "unknown@example.com";
+               var commitId = c["commitId"]?.ToString() ?? c["commitId"]?.ToString();
+               var commitDate = DateTime.Parse(c["author"]?["date"]?.ToString() ?? c["date"]?.ToString() ?? merged.ToString());
 
+               if (IsBot(authorName, authorEmail)) continue;
 
-                    /////till here
+               string message = c["comment"]?.ToString() ?? c["message"]?.ToString() ?? "";
+               var coAuthors = ParseCoAuthors(message); // implement to extract "Co-authored-by: Name <email>"
+
+               try
+               {
+                   var (filesChanged, logicalChanged, added, deleted) =
+                       GitHelpers.GetCommitDiffSummaryCollapsedIgnoringTrivial(
+                           localRepoPath, commitId,
+                           stripXmlDecl: true,
+                           includeExts: new[]{ ".cs", ".fs", ".ts", ".tsx", ".js", ".java", ".kt", ".go", ".py", ".resx",".yaml" } // adjust as needed
+                       );
                    
-                    ///
-                    // prStatsList.Add(new PRStats
-                    // {
-                    //    Title = pr["title"]!.ToString(),
-                    //    SourceRef = pr["sourceRefName"].ToString(),
-                    //    TargetRef = pr["targetRefName"].ToString(),
-                    //    Created = created,
-                    //    Merged = merged,
-                    //    LinesChanged = await client.GetLinesChangedInPR(project.Name, repo.Name, prId),
-                    // });
+ 
+                   UpsertAuthor(authorStats, authorToPrs, authorName, authorEmail, prId, added, deleted, logicalChanged, filesChanged);
+                   csvCommits.AppendLine($"{prId},{project.Name},{repo.Name},{commitId},{authorName},{authorEmail},{commitDate:O},{added},{deleted},{added + deleted},{logicalChanged}");
 
-                    #region prs author report
-                //     commitStatsList = await client.GetLinesChangedInPRPerDeveloper(project.Name, repo.Name, prId);
-                //    foreach (var commitStats in commitStatsList)
-                //    {
-                //        csvPrs.AppendLine($"{prId},{project.Name},{repo.Name},{commitStats.CommitId},{commitStats.Author},{commitStats.CommitDate:yyyy-MM-dd},{commitStats.LinesAdded},{commitStats.LinesEdited},{commitStats.LinesDeleted},{commitStats.TotalLinesChanged}");
-                //    }
-                   #endregion
+                   if (!firstCommitTimeByAuthor.ContainsKey(authorEmail))
+                       firstCommitTimeByAuthor[authorEmail] = commitDate;
 
-
+                   foreach (var (coName, coEmail) in coAuthors)
+                   {
+                       if (IsBot(coName, coEmail)) continue;
+                       UpsertAuthor(authorStats, authorToPrs, coName, coEmail, prId, 0, 0, 0,0);
+                       if (!firstCommitTimeByAuthor.ContainsKey(coEmail))
+                           firstCommitTimeByAuthor[coEmail] = commitDate;
+                   }
+               }
+               catch (Exception e)
+               {
+                   Console.WriteLine(e);
+               }
+           }
         }
-
-
-
-
-
-
-        ////export PRs
-
-        // var grouped = prStatsList
-        //    .GroupBy(pr => new { pr.Merged.Year, pr.Merged.Month })
-        //    .OrderByDescending(g => g.Key.Year)
-        //    .ThenByDescending(g => g.Key.Month);
-        //
-        //
-        // foreach (var group in grouped)
-        // {
-        //    var stats = new MonthlyDeploymentStats
-        //    {
-        //        Project = project.Name,
-        //        Repository = repo.Name,
-        //        Branch = branchRef.Split('/').Last(),
-        //        Year = group.Key.Year,
-        //        Month = group.Key.Month,
-        //        PullRequests = group.ToList()
-        //    };
-        //
-        //    AnalyzePRGroup(csv, stats);
-        // }
     }
-
-    
-
-
-
-
 }
 
+foreach (var s in authorStats.Values.OrderByDescending(x => x.TotalLoc))
+{
+    csvAuthors.AppendLine($"{s.Name},{s.Email},{s.Commits},{s.PRsTouched},{s.LinesAdded},{s.LinesDeleted},{s.LogicalChanges},{s.FilesChanged},{s.TotalLoc}");
+}
+
+var outDir = AppContext.BaseDirectory;
+var authorSummaryFile = Path.Combine(outDir, $"author_summary_{DateTime.Now:yyyyMMdd_HHmmss}.csv");
+System.IO.File.WriteAllText(authorSummaryFile, csvAuthors.ToString());
+var commitFile = Path.Combine(outDir, $"commit_attribution_{DateTime.Now:yyyyMMdd_HHmmss}.csv");
+System.IO.File.WriteAllText(commitFile, csvCommits.ToString());
+
+
 //export prs
-var prFileName = $"pullrequest_report_{DateTime.Now:yyyyMMdd_HHmmss}.csv";
-System.IO.File.WriteAllText(prFileName, csvPrs.ToString());
-Console.WriteLine($"\nCSV PR export complete: {prFileName}");
+// var prFileName = $"pullrequest_report_{DateTime.Now:yyyyMMdd_HHmmss}.csv";
+// System.IO.File.WriteAllText(prFileName, csvPrs.ToString());
+// Console.WriteLine($"\nCSV PR export complete: {prFileName}");
 
 // var fileName = $"deployment_report_{DateTime.Now:yyyyMMdd_HHmmss}.csv";
 // System.IO.File.WriteAllText(fileName, csv.ToString());
@@ -244,6 +233,183 @@ void AnalyzePRGroup(StringBuilder csv, MonthlyDeploymentStats stats)
 
     csv.AppendLine($"{stats.Project},{stats.Repository},{stats.Branch},{stats.Year},{stats.Month}," +
                    $"{stats.Deploys},{stats.Reverts},{stats.Hotfixes},{stats.FailureRate:F2},{stats.AvgLeadTimeHours:F2}h,{stats.AvgPRSize:F1}");
+}
+
+bool IsBot(string name, string email)
+{
+    var s = $"{name} {email}".ToLowerInvariant();
+    return s.Contains("[bot]") || s.Contains(" bot") || s.Contains("ci@") || s.Contains("build@") || s.Contains("automation@");
+}
+
+
+void UpsertAuthor(
+    Dictionary<string, AuthorStats> map,
+    Dictionary<string, HashSet<int>> a2p,
+    string name,
+    string email,
+    int prId,
+    long added,
+    long deleted,
+    long logicalChanges,
+    long filesChanged)
+{
+    if (!map.TryGetValue(email, out var s))
+    {
+        s = new AuthorStats { Email = email, Name = name };
+        map[email] = s;
+    }
+    s.Commits += 1;
+    s.LinesAdded += added;
+    s.FilesChanged += filesChanged;
+    s.LinesDeleted += deleted;
+    s.LogicalChanges += logicalChanges;
+
+    if (!a2p.TryGetValue(email, out var set))
+    {
+        set = new HashSet<int>();
+        a2p[email] = set;
+    }
+    if (set.Add(prId)) s.PRsTouched += 1;
+}
+
+IEnumerable<(string Name, string Email)> ParseCoAuthors(string message)
+{
+    var result = new List<(string, string)>();
+    if (string.IsNullOrEmpty(message)) return result;
+    var lines = message.Split('\n');
+    var pattern = new System.Text.RegularExpressions.Regex(@"Co-authored-by:\s*(.+?)\s*<([^>]+)>", RegexOptions.IgnoreCase);
+    foreach (var line in lines)
+    {
+        var m = pattern.Match(line);
+        if (m.Success)
+        {
+            result.Add((m.Groups[1].Value.Trim(), m.Groups[2].Value.Trim()));
+        }
+    }
+    return result;
+}
+
+internal static class GitHelpers
+{
+    internal static readonly string RepoCacheRoot =
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ado-repos-cache");
+
+    internal static string EnsureLocalRepo(string org, string project, Guid repoId, string? pat)
+    {
+        Directory.CreateDirectory(RepoCacheRoot);
+        var localPath = Path.Combine(RepoCacheRoot, $"{project}_{repoId}");
+
+        var creds = new UsernamePasswordCredentials
+        {
+            Username = "pat",                // any non-empty string
+            Password = pat ?? string.Empty   // your Azure DevOps PAT
+        };
+
+        if (!Repository.IsValid(localPath))
+        {
+            var co = new CloneOptions
+            {
+                IsBare = false
+            };
+            co.FetchOptions.CredentialsProvider = (_url, _user, _types) => creds;
+
+            Repository.Clone($"https://dev.azure.com/{org}/{project}/_git/{repoId}", localPath, co);
+        }
+        else
+        {
+            using var repo = new Repository(localPath);
+            var fo = new FetchOptions
+            {
+                CredentialsProvider = (_url, _user, _types) => creds
+            };
+            Commands.Fetch(repo, "origin", new[] { "+refs/heads/*:refs/remotes/origin/*" }, fo, null);
+        }
+
+        return localPath;
+    }
+    
+    internal static (int filesChanged, int logicalChanged, int added, int deleted)
+    GetCommitDiffSummaryCollapsedIgnoringTrivial(
+        string repoPath,
+        string commitId,
+        bool stripXmlDecl = true,
+        string[]? includeExts = null) // e.g., new[]{ ".cs",".resx" }
+    {
+        using var repo = new Repository(repoPath);
+        var commit = repo.Lookup<Commit>(commitId)
+                     ?? throw new InvalidOperationException($"Commit {commitId} not found in {repoPath}");
+        var parent = commit.Parents.FirstOrDefault();
+        if (parent == null) return (0, 0, 0, 0);
+
+        Patch patch = repo.Diff.Compare<Patch>(parent.Tree, commit.Tree);
+        var entries = patch.Where(e =>
+            !e.IsBinaryComparison &&
+            (includeExts == null || includeExts.Length == 0 ||
+             includeExts.Contains(Path.GetExtension(e.Path)?.ToLowerInvariant() ?? ""))
+        ).ToList();
+
+        int filesChanged = 0, addedTotal = 0, deletedTotal = 0, logicalTotal = 0;
+
+        foreach (var e in entries)
+        {
+            var oldBlob = parent[e.Path]?.Target as Blob;
+            var newBlob = commit[e.Path]?.Target as Blob;
+
+            if (oldBlob == null || newBlob == null)
+            {
+                filesChanged++;
+                addedTotal  += e.LinesAdded;
+                deletedTotal += e.LinesDeleted;
+                logicalTotal += Math.Max(e.LinesAdded, e.LinesDeleted);
+                continue;
+            }
+
+            string oldText = ReadAllText(oldBlob);
+            string newText = ReadAllText(newBlob);
+
+            oldText = NormalizeText(oldText, stripXmlDecl);
+            newText = NormalizeText(newText, stripXmlDecl);
+
+            if (string.Equals(oldText, newText, StringComparison.Ordinal))
+                continue;
+
+            filesChanged++;
+
+            addedTotal  += e.LinesAdded;
+            deletedTotal += e.LinesDeleted;
+
+            var differ = new Differ();
+            var inline = new InlineDiffBuilder(differ).BuildDiffModel(oldText, newText);
+
+            int logicalForFile = inline.Lines.Count(l =>
+                l.Type == ChangeType.Inserted || l.Type == ChangeType.Deleted);
+
+            if (logicalForFile == 0)
+                logicalForFile = Math.Max(e.LinesAdded, e.LinesDeleted);
+
+            logicalTotal += logicalForFile;
+        }
+
+        return (filesChanged, logicalTotal, addedTotal, deletedTotal);
+    }
+
+    private static string ReadAllText(Blob blob)
+    {
+        using var s = blob.GetContentStream();
+        using var r = new StreamReader(s, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        return r.ReadToEnd();
+    }
+
+    private static readonly Regex XmlDeclRegex =
+        new(@"^\s*<\?xml\s+version=""1\.0""[^?]*\?>\s*\n?", RegexOptions.IgnoreCase | RegexOptions.Multiline);
+
+    private static string NormalizeText(string s, bool stripXmlDecl)
+    {
+        s = s.Replace("\r\n", "\n").Replace("\r", "\n");
+        s = string.Join("\n", s.Split('\n').Select(line => line.TrimEnd()));
+        if (stripXmlDecl) s = XmlDeclRegex.Replace(s, string.Empty);
+        return s;
+    }
 }
 
 

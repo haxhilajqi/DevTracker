@@ -77,6 +77,75 @@ public class AzureDevOpsClient
             .Select(refObj => refObj["name"]!.ToString()) // e.g., "refs/heads/main"
             .ToList();
     }
+    
+    public async Task<(int added, int edited, int deleted)> GetCommitChangeStatsAsync(string project, string repoId, string commitId)
+    {
+        var url = $"https://dev.azure.com/{_org}/{project}/_apis/git/repositories/{repoId}/commits/{commitId}/changes?api-version=7.2-preview.1";
+        using var response = await _client.GetAsync(url);
+        response.EnsureSuccessStatusCode();
+        var json = await response.Content.ReadAsStringAsync();
+        var changesJson = JObject.Parse(json);
+
+        int added = 0, edited = 0, deleted = 0;
+        
+        //var changesJson = JObject.Parse(await changesRes.Content.ReadAsStringAsync());
+        var changes = changesJson["changeCounts"];
+        //if (changes == null) continue;
+        if (changes != null)
+        {
+            added = changesJson["changeCounts"]?["Add"]?.Value<int>() ?? 0;
+            edited = changesJson["changeCounts"]?["Edit"]?.Value<int>() ?? 0;
+            deleted = changesJson["changeCounts"]?["Delete"]?.Value<int>() ?? 0;
+        }
+        //totalChanged += add + del + edit;
+
+        // foreach (var change in changesJson["changes"] ?? Enumerable.Empty<JToken>())
+        // {
+        //     var counts = change["changeCounts"];
+        //     if (counts != null)
+        //     {
+        //         added  += counts.Value<int?>("Add")    ?? 0;
+        //         edited += counts.Value<int?>("Edit")   ?? 0;
+        //         deleted+= counts.Value<int?>("Delete") ?? 0;
+        //     }
+        // }
+
+        return (added, edited, deleted);
+    }
+    
+    public async Task<JArray?> GetPullRequestCommitsAsync(string project, string repoId, int prId)
+    {
+        var commits = new JArray();
+        string? continuationToken = null;
+
+        do
+        {
+            var url = $"https://dev.azure.com/{_org}/{project}/_apis/git/repositories/{repoId}/pullRequests/{prId}/commits" +
+                      $"?api-version=7.2-preview.1";
+
+            if (!string.IsNullOrEmpty(continuationToken))
+                url += $"&continuationToken={Uri.EscapeDataString(continuationToken)}";
+
+            using var resp = await _client.GetAsync(url);
+            resp.EnsureSuccessStatusCode();
+
+            // Body
+            var json = await resp.Content.ReadAsStringAsync();
+            var obj = JObject.Parse(json);
+            var value = (JArray?)obj["value"] ?? new JArray();
+            foreach (var item in value) commits.Add(item);
+
+            // Pagination: Azure DevOps uses x-ms-continuationtoken on many list endpoints
+            continuationToken = null;
+            if (resp.Headers.TryGetValues("x-ms-continuationtoken", out var tokens))
+                continuationToken = tokens.FirstOrDefault();
+
+        } while (!string.IsNullOrEmpty(continuationToken));
+
+        return commits;
+    }
+
+
 
     //public async Task<int> GetLinesChangedInPR(string project, string repoId, int prId)
     //{
@@ -168,6 +237,8 @@ public class AzureDevOpsClient
     //        return 0;
     //    }
     //}
+    
+    
 
 
     public async Task<int> GetLinesChangedInPR(string project, string repoId, int prId)
