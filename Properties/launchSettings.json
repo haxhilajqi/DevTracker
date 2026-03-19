@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "DevTracker": {
+      "commandName": "Project",
+      "commandLineArgs": "--all-projects --from 2025-07 --to 2025-07"
+    }
+  }
+}
